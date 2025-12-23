@@ -990,11 +990,11 @@ export const printOrderReceipt = async (req, res) => {
 // @desc    Print order receipt PDF and save to uploads folder
 // @route   GET /api/orders/:id/receipt/pdf
 // @access  Private
+// In orderController.js - printOrderReceiptPDF function
 export const printOrderReceiptPDF = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
       .populate('user', 'name email')
-      .populate('guestUser', 'name email phone')
       .populate('products.product', 'name price image');
 
     if (!order) {
@@ -1015,32 +1015,15 @@ export const printOrderReceiptPDF = async (req, res) => {
       });
     }
 
-    // Format receipt data
     const receiptData = formatReceiptData(order);
-
-    // Generate PDF buffer
-    const pdfBuffer = await generateReceiptPDFBuffer(receiptData);
     
-    // Create uploads directory if it doesn't exist
-    const uploadsDir = path.join(process.cwd(), 'uploads', 'receipts');
-    if (!fs.existsSync(uploadsDir)) {
-      fs.mkdirSync(uploadsDir, { recursive: true });
-    }
-
-    // Generate filename
-    const filename = `receipt-${order.orderId || order._id}.pdf`;
-    const filePath = path.join(uploadsDir, filename);
-
-    // Save PDF to uploads folder
-    fs.writeFileSync(filePath, pdfBuffer);
-
-    console.log(`✅ PDF saved to uploads folder: ${filePath}`);
-
-    // Also send PDF as response for download
+    // Set headers for inline PDF display
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.send(pdfBuffer);
-
+    res.setHeader('Content-Disposition', `inline; filename="receipt-${order.orderId}.pdf"`);
+    
+    // Generate and send PDF
+    await generateReceiptPDF(res, receiptData);
+    
   } catch (error) {
     console.error('PDF receipt generation error:', error);
     res.status(500).json({ 

@@ -24,10 +24,6 @@ router.get('/summary', protect, admin, getOrderSummary);
 router.get('/:id', protect, getOrderById);
 router.put('/:id/status', protect, admin, updateOrderStatus);
 
-
-
-// Refund endpoint - ADD THIS ROUTE
-router.post('/:id/refund', protect, admin, refundPayment);
 // Cancel order endpoint
 router.put('/:id/cancel', protect, cancelOrder);
 

@@ -39,7 +39,7 @@ export const createRazorpayOrder = async (req, res) => {
 
     // Create Razorpay order
     const razorpayOrder = await razorpay.orders.create({
-      amount: Math.round(order.finalAmount * 100), // ₹ to paise
+      amount: Math.round(order.finalAmount * 100), 
       currency: 'INR',
       receipt: order.orderId,
       notes: {
@@ -402,178 +402,47 @@ export const getPaymentDetails = async (req, res) => {
 /* -------------------------------------------------------------------------- */
 export const refundPayment = async (req, res) => {
   try {
-    const { notes, refund_amount } = req.body;
     const { paymentId } = req.params;
-    
-    console.log(`Processing refund for payment: ${paymentId}`);
-    
-    // First, verify the payment exists in Razorpay
-    let razorpayPayment;
-    try {
-      razorpayPayment = await razorpay.payments.fetch(paymentId);
-      console.log('Razorpay payment details:', {
-        id: razorpayPayment.id,
-        amount: razorpayPayment.amount,
-        currency: razorpayPayment.currency,
-        status: razorpayPayment.status,        
-        amount_refunded: razorpayPayment.amount_refunded,
-        refund_status: razorpayPayment.refund_status
-      });
-    } catch (error) {
-      return res.status(404).json({
-        success: false,
-        message: 'Payment not found in Razorpay',
-        error: error.message
-      });
+    const { refund_amount } = req.body;
+
+    console.log('🔁 Refund request:', { paymentId, refund_amount });
+
+    if (!paymentId) {
+      return res.status(400).json({ success: false, message: 'Payment ID missing' });
     }
 
-    // Check if payment is already fully refunded
-    if (razorpayPayment.amount_refunded === razorpayPayment.amount) {
-      return res.status(400).json({
-        success: false,
-        message: 'Payment has already been fully refunded',
-        payment: {
-          id: razorpayPayment.id,
-          amount: razorpayPayment.amount,
-          amount_refunded: razorpayPayment.amount_refunded,
-          status: razorpayPayment.status
-        }
-      });
+    if (!refund_amount || refund_amount <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid refund amount' });
     }
 
-    // Check if payment is captured/authorized
-    if (razorpayPayment.status !== 'captured' && razorpayPayment.status !== 'authorized') {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot refund payment with status: ${razorpayPayment.status}`,
-        validStatuses: ['captured', 'authorized']
-      });
-    }
-
-    // Find order in our database
-    const order = await Order.findOne({ 
-      $or: [
-        { paymentId: paymentId },
-        { razorpayOrderId: razorpayPayment.order_id }
-      ]
-    }).populate('products.product', 'name price');
-
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found for this payment ID',
-      });
-    }
-
-    // Calculate refund amount
-    let refundAmount;
-    if (refund_amount) {
-      // Use provided refund amount
-      refundAmount = Math.round(refund_amount * 100); // Convert to paise
-    } else {
-      // Use remaining amount (full refund)
-      refundAmount = razorpayPayment.amount - razorpayPayment.amount_refunded;
-    }
-
-    // Validate refund amount
-    if (refundAmount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid refund amount',
-        available_for_refund: razorpayPayment.amount - razorpayPayment.amount_refunded
-      });
-    }
-
-    if (refundAmount > (razorpayPayment.amount - razorpayPayment.amount_refunded)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Refund amount exceeds available amount',
-        requested_refund: refundAmount,
-        available_for_refund: razorpayPayment.amount - razorpayPayment.amount_refunded
-      });
-    }
-
-    console.log('Processing refund:', {
-      payment_id: paymentId,
-      refund_amount: refundAmount,
-      currency: razorpayPayment.currency
-    });
-
-    // Create refund
     const refund = await razorpay.payments.refund(paymentId, {
-      amount: refundAmount,
-      notes: notes || { reason: 'Customer request' },
+      amount: Math.round(refund_amount * 100),
     });
-    
-    console.log('Refund created successfully:', refund);
 
-    // Update order status based on refund type
-    if (refundAmount === razorpayPayment.amount) {
-      // Full refund
+    const order = await Order.findOne({ paymentId });
+    if (order) {
       order.paymentStatus = 'refunded';
-      order.orderStatus = 'refunded';
-    } else {
-      // Partial refund
-      order.paymentStatus = 'partially_refunded';
-      order.orderStatus = 'partially_refunded';
+      order.orderStatus = 'cancelled';
+      await order.save();
     }
-    
-    // Add refund details to order
-    order.refunds = order.refunds || [];
-    order.refunds.push({
-      refundId: refund.id,
-      amount: refundAmount / 100, // Convert back from paise
-      razorpayPaymentId: paymentId,
-      type: refundAmount === razorpayPayment.amount ? 'full' : 'partial',
-      createdAt: new Date(),
-      notes: notes || { reason: 'Customer request' }
-    });
 
-    // Restore product stock for full refunds
-    if (refundAmount === razorpayPayment.amount) {
-      for (const item of order.products) {
-        await Product.findByIdAndUpdate(item.product._id, {
-          $inc: { stock: item.quantity }
-        });
-        console.log(`Restored ${item.quantity} units for product: ${item.product.name}`);
-      }
-    }
-    
-    await order.save();
-
-    res.json({
+    return res.status(200).json({
       success: true,
-      refund: {
-        id: refund.id,
-        amount: refundAmount / 100,
-        currency: razorpayPayment.currency,
-        status: refund.status,
-        type: refundAmount === razorpayPayment.amount ? 'full' : 'partial'
-      },
-      message: `Payment refunded successfully (${refundAmount === razorpayPayment.amount ? 'full' : 'partial'} refund)`,
-      userType: order.user ? 'registered' : 'guest',
-      orderStatus: order.orderStatus
+      refund,
     });
+
   } catch (error) {
-    console.error('Refund error:', error);
-    
-    // Handle specific Razorpay error cases
-    if (error.statusCode === 400) {
-      return res.status(400).json({
-        success: false,
-        message: 'Refund failed',
-        error: error.error?.description || error.message,
-        code: error.error?.code
-      });
-    }
-    
-    res.status(500).json({
+    console.error('❌ Razorpay refund error:', error);
+
+    return res.status(500).json({
       success: false,
-      message: 'Internal server error during refund',
-      error: error.message
+      message: error?.error?.description || error.message || 'Refund failed',
+      razorpayError: error?.error || null, 
     });
   }
 };
+
+
 
 /* -------------------------------------------------------------------------- */
 /* 🧩 6. Create guest order (NEW)                                             */
