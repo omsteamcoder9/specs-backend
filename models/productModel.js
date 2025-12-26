@@ -18,7 +18,8 @@ const productSchema = new mongoose.Schema({
     },
     slug: {
         type: String,
-        unique: true
+        unique: true,
+        sparse: true // ✅ Add sparse index for better handling
     },
     price: {
         type: Number,
@@ -35,38 +36,6 @@ const productSchema = new mongoose.Schema({
         ref: 'Category',
         required: [true, 'Please select a category']
     },
-
-    // // ✅ Size Variants (SEPARATE)
-    // sizes: [
-    //     {
-    //         size: {
-    //             type: String,
-    //             enum: ['M', 'L', 'XL', 'XXL'],
-    //             required: true
-    //         },
-    //         stock: {
-    //             type: Number,
-    //             default: 0
-    //         }
-    //     }
-    // ],
-
-    // ✅ Color Variants (SEPARATE)
-    colors: [
-        {
-            name: {
-                type: String,
-                required: true
-            },
-            code: {
-                type: String // hex: #FFFFFF
-            },
-            stock: {
-                type: Number,
-                default: 0
-            }
-        }
-    ],
 
     // ✅ Specifications
     specifications: [
@@ -108,7 +77,7 @@ const productSchema = new mongoose.Schema({
         required: [true, 'Please enter seller name']
     },
 
-    // ✅ Total Stock (optional fallback)
+    // ✅ Total Stock
     stock: {
         type: Number,
         required: [true, 'Please enter stock quantity']
@@ -142,15 +111,34 @@ const productSchema = new mongoose.Schema({
     }
 });
 
-
-// ✅ Generate slug
-productSchema.pre('save', function (next) {
+// ✅ Generate unique slug with counter for duplicates
+productSchema.pre('save', async function (next) {
     if (this.isModified('name')) {
-        this.slug = slugify(this.name, { lower: true, strict: true });
+        // Generate base slug
+        const baseSlug = slugify(this.name, { lower: true, strict: true });
+        
+        // Check if slug already exists
+        let slug = baseSlug;
+        let counter = 1;
+        let slugExists = true;
+        
+        while (slugExists) {
+            const existingProduct = await this.constructor.findOne({ slug });
+            
+            // If no product found with this slug, or it's the current product being updated
+            if (!existingProduct || existingProduct._id.equals(this._id)) {
+                slugExists = false;
+            } else {
+                // If slug exists, append counter
+                slug = `${baseSlug}-${counter}`;
+                counter++;
+            }
+        }
+        
+        this.slug = slug;
     }
     next();
 });
-
 
 // ✅ Auto Increment S.No
 productSchema.pre('save', async function (next) {
@@ -166,10 +154,9 @@ productSchema.pre('save', async function (next) {
     next();
 });
 
-
 // ✅ Indexes
 productSchema.index({ category: 1, status: 1 });
 productSchema.index({ featured: 1 });
-productSchema.index({ slug: 1 });
+productSchema.index({ slug: 1, sparse: true }); // ✅ Make sparse
 
 export default mongoose.model('Product', productSchema);

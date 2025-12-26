@@ -15,7 +15,6 @@ export const createProduct = async (req, res) => {
       seller,
       stock,
       numberOfReviews,
-      colors,
       specifications
     } = req.body;
 
@@ -28,6 +27,7 @@ export const createProduct = async (req, res) => {
     if (!price) missingFields.push('price');
     if (!description) missingFields.push('description');
     if (!seller) missingFields.push('seller');
+    if (!stock) missingFields.push('stock');
 
     if (missingFields.length > 0) {
       return res.status(400).json({
@@ -38,36 +38,11 @@ export const createProduct = async (req, res) => {
     }
 
     /* ===============================
-       ✅ HANDLE COLOURS (SEPARATE)
-    =============================== */
-    let parsedColors = [];
-    let stockFromColors = 0;
-
-    if (colors) {
-      parsedColors = typeof colors === 'string' ? JSON.parse(colors) : colors;
-
-      parsedColors = parsedColors
-        .map(item => {
-          if (!item?.name) return null;
-
-          const qty = parseInt(item.stock) || 0;
-          stockFromColors += qty;
-
-          return {
-            name: item.name,
-            code: item.code || '',
-            stock: qty
-          };
-        })
-        .filter(Boolean);
-    }
-
-    /* ===============================
        ✅ HANDLE SPECIFICATIONS
     =============================== */
-    let parsedSpecs = [];
+    let parsedBookStore = [];
     if (specifications) {
-      parsedSpecs =
+      parsedBookStore =
         typeof specifications === 'string'
           ? JSON.parse(specifications)
           : specifications;
@@ -83,17 +58,13 @@ export const createProduct = async (req, res) => {
       : [];
 
     /* ===============================
-       ✅ FINAL STOCK LOGIC
-       Priority: colors > stock
+       ✅ VALIDATE STOCK
     =============================== */
-    const finalStock = stockFromColors > 0
-      ? stockFromColors
-      : parseInt(stock) || 0;
-
+    const finalStock = parseInt(stock) || 0;
     if (finalStock <= 0) {
       return res.status(400).json({
         success: false,
-        message: 'Stock must be greater than 0 (colors or stock)'
+        message: 'Stock must be greater than 0'
       });
     }
 
@@ -102,7 +73,7 @@ export const createProduct = async (req, res) => {
     =============================== */
     const product = new Product({
       name,
-      slug: slugify(name, { lower: true, strict: true }),
+      // Let the pre-save middleware handle slug generation
       price: parseFloat(price),
       description,
       category: category || null,
@@ -110,8 +81,7 @@ export const createProduct = async (req, res) => {
       seller,
       stock: finalStock,
       numberOfReviews: numberOfReviews || 0,
-      colors: parsedColors,
-      specifications: parsedSpecs,
+      specifications: parsedBookStore,
       images,
       ogImage: images.length > 0 ? images[0].image : null,
       status: 'active',
@@ -136,16 +106,27 @@ export const createProduct = async (req, res) => {
       errorMessage = Object.values(error.errors)
         .map(err => err.message)
         .join(', ');
+    } else if (error.code === 11000) {
+      // Handle duplicate key error
+      if (error.keyPattern && error.keyPattern.slug) {
+        errorMessage = 'A product with this name already exists. Please use a different name.';
+      } else if (error.keyPattern && error.keyPattern.sNo) {
+        errorMessage = 'Serial number conflict. Please try again.';
+      } else {
+        errorMessage = 'Duplicate entry error. Please check your data.';
+      }
     }
 
     res.status(400).json({
       success: false,
       message: errorMessage,
-      errorType: error.name
+      errorType: error.name,
+      errorCode: error.code
     });
   }
 };
 
+// ✅ Update Product
 // ✅ Update Product
 export const updateProduct = async (req, res) => {
   try {
@@ -170,24 +151,13 @@ export const updateProduct = async (req, res) => {
     // ✅ Update provided fields only
     for (const [key, value] of Object.entries(req.body)) {
       if (value !== undefined && value !== null && value !== '') {
-        // ✅ Handle colors parsing
-        if (key === 'colors') {
-          let parsedColors = typeof value === 'string' ? JSON.parse(value) : value;
-          
-          // Validate and format colors
-          parsedColors = parsedColors.map(colorItem => {
-            if (colorItem && colorItem.name) {
-              return {
-                name: colorItem.name,
-                code: colorItem.code || '',
-                stock: parseInt(colorItem.stock) || 0
-              };
-            }
-            return colorItem;
-          }).filter(colorItem => colorItem && colorItem.name);
-          
-          existingProduct[key] = parsedColors;
-        } else {
+        // ✅ Handle specifications parsing
+        if (key === 'specifications') {
+          let parsedBookStore = typeof value === 'string' ? JSON.parse(value) : value;
+          existingProduct[key] = parsedBookStore;
+        }
+        // ✅ Handle other fields
+        else if (key !== 'slug') { // Don't allow direct slug updates
           existingProduct[key] = value;
         }
       }
@@ -202,9 +172,10 @@ export const updateProduct = async (req, res) => {
       existingProduct.ogImage = newImages[0].image;
     }
 
-    // ✅ Update slug if name changes
-    if (req.body.name) {
-      existingProduct.slug = slugify(req.body.name, { lower: true, strict: true });
+    // ✅ Update slug if name changes (handled by pre-save middleware)
+    if (req.body.name && req.body.name !== existingProduct.name) {
+      existingProduct.name = req.body.name;
+      // Slug will be automatically regenerated by pre-save middleware
     }
 
     // ✅ Save updates
@@ -217,9 +188,18 @@ export const updateProduct = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Update Product Error:', error);
+    
+    let errorMessage = error.message;
+    if (error.code === 11000) {
+      if (error.keyPattern && error.keyPattern.slug) {
+        errorMessage = 'A product with similar name already exists. Please use a different name.';
+      }
+    }
+    
     res.status(500).json({
       success: false,
-      message: error.message || 'Failed to update product.',
+      message: errorMessage || 'Failed to update product.',
+      errorCode: error.code
     });
   }
 };
@@ -231,7 +211,7 @@ export const getAllProducts = async (req, res) => {
     // Build filter object
     let filter = {};
     
-    // ✅ FIXED: Handle category filtering by slug
+    // ✅ Handle category filtering by slug
     const categoryFilter = categorySlug || category;
     
     if (categoryFilter && categoryFilter !== 'undefined') {
@@ -371,7 +351,7 @@ export const getProductBySlug = async (req, res) => {
 // ✅ Get featured products with price range filtering
 export const getFeaturedProducts = async (req, res) => {
     try {
-        const { priceRange, category, colors, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
+        const { priceRange, category, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
         
         // Build filter object
         let filter = { featured: true, status: 'active' };
@@ -408,17 +388,8 @@ export const getFeaturedProducts = async (req, res) => {
             }
         }
         
-        // Handle color filtering
-        let colorFilter = {};
-        if (colors && colors !== 'all') {
-            const colorArray = Array.isArray(colors) ? colors : [colors];
-            colorFilter = {
-                'colors.name': { $in: colorArray }
-            };
-        }
-        
         // Combine filters
-        const finalFilter = { ...filter, ...priceFilter, ...colorFilter };
+        const finalFilter = { ...filter, ...priceFilter };
         
         // Sort configuration
         const sortConfig = {};
@@ -519,7 +490,6 @@ export const getFilteredFeaturedProducts = async (req, res) => {
         const { 
             priceRanges, 
             categories, 
-            colors,
             minPrice, 
             maxPrice, 
             page = 1, 
@@ -535,12 +505,6 @@ export const getFilteredFeaturedProducts = async (req, res) => {
         if (categories && categories !== 'all') {
             const categoryArray = Array.isArray(categories) ? categories : [categories];
             filter.category = { $in: categoryArray };
-        }
-
-        // Color filter
-        if (colors && colors !== 'all') {
-            const colorArray = Array.isArray(colors) ? colors : [colors];
-            filter['colors.name'] = { $in: colorArray };
         }
 
         // Price filter - multiple approaches
@@ -636,10 +600,9 @@ export const searchProducts = async (req, res) => {
     const { 
       search, 
       category, 
-      categorySlug, // ✅ Add categorySlug parameter
+      categorySlug, 
       minPrice, 
       maxPrice, 
-      colors,
       sortBy = 'createdAt', 
       sortOrder = 'desc',
       page = 1,
@@ -649,7 +612,7 @@ export const searchProducts = async (req, res) => {
     // Build filter object
     let filter = { status: 'active' };
 
-    // Search by name or description
+    // ✅ Search by name or description
     if (search && search.trim() !== '') {
       filter.$or = [
         { name: { $regex: search, $options: 'i' } },
@@ -657,15 +620,13 @@ export const searchProducts = async (req, res) => {
       ];
     }
 
-    // ✅ FIXED: Handle category filtering by slug
+    // ✅ Handle category filtering by slug
     const categoryFilter = categorySlug || category;
     
     if (categoryFilter && categoryFilter !== 'all' && categoryFilter !== 'undefined') {
-      // Check if it's a valid ObjectId
       if (mongoose.Types.ObjectId.isValid(categoryFilter)) {
         filter.category = categoryFilter;
       } else {
-        // If it's a slug, find the category first
         const categoryDoc = await Category.findOne({ 
           slug: categoryFilter,
           status: 'active' 
@@ -674,14 +635,7 @@ export const searchProducts = async (req, res) => {
         if (categoryDoc) {
           filter.category = categoryDoc._id;
         }
-        // If category not found, no filter will be applied (show all products)
       }
-    }
-
-    // Color filter
-    if (colors && colors !== 'all') {
-      const colorArray = Array.isArray(colors) ? colors : [colors];
-      filter['colors.name'] = { $in: colorArray };
     }
 
     // Price range filter
@@ -748,12 +702,9 @@ export const quickSearchProducts = async (req, res) => {
       });
     }
 
-    // Search products by name (case-insensitive)
+    // ✅ Search products by name
     const products = await Product.find({
-      name: { 
-        $regex: searchQuery.trim(), 
-        $options: 'i'
-      },
+      name: { $regex: searchQuery.trim(), $options: 'i' },
       status: 'active'
     })
     .select('name slug price images ogImage category featured')
