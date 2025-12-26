@@ -40,9 +40,9 @@ export const createProduct = async (req, res) => {
     /* ===============================
        ✅ HANDLE SPECIFICATIONS
     =============================== */
-    let parsedBookStore = [];
+    let parsedsoap = [];
     if (specifications) {
-      parsedBookStore =
+      parsedsoap =
         typeof specifications === 'string'
           ? JSON.parse(specifications)
           : specifications;
@@ -81,7 +81,7 @@ export const createProduct = async (req, res) => {
       seller,
       stock: finalStock,
       numberOfReviews: numberOfReviews || 0,
-      specifications: parsedBookStore,
+      specifications: parsedsoap,
       images,
       ogImage: images.length > 0 ? images[0].image : null,
       status: 'active',
@@ -153,8 +153,8 @@ export const updateProduct = async (req, res) => {
       if (value !== undefined && value !== null && value !== '') {
         // ✅ Handle specifications parsing
         if (key === 'specifications') {
-          let parsedBookStore = typeof value === 'string' ? JSON.parse(value) : value;
-          existingProduct[key] = parsedBookStore;
+          let parsedsoap = typeof value === 'string' ? JSON.parse(value) : value;
+          existingProduct[key] = parsedsoap;
         }
         // ✅ Handle other fields
         else if (key !== 'slug') { // Don't allow direct slug updates
